@@ -1,7 +1,6 @@
 import numpy as np 
 from scipy.integrate import odeint
 
-parameter_names = ['kG', 'kL', 'kF','kR', 'vG0', 'vF0', 'vE', 'KI_G_L', 'KI_F0_L', 'KI_F0_I', 'I0']
 flux_names = ['vG0', 'vF0', 'vG', 'vL', 'vF']
 
 def fluxes(x,p):
@@ -44,7 +43,7 @@ def reference_state(noise = 0.1 ):
 
 def reference_fluxes(noise= 0.1):
     # Fluxes
-    vG0 = 0.3/2.0
+    vG0 = 0.3 / 2.0
     vF0 = 0.7 * 3/16
     vG = vG0
     vL = vG0 * 2.0
@@ -116,6 +115,9 @@ tauL = 5.0   * 0.3
 tauF = 10.0  * 0.7*3/16/2*3
 tauI = 1.0 # Insulin is fast
 
+# Metformin
+tauM = 120 # Metformin is slow
+
 ##############################
 # Differential equations     #
 ##############################
@@ -154,6 +156,25 @@ def equation_clamped(x,t,p):
 
     return [dGdt/tauG , dLdt/tauL, dFdt/tauF, dIdt/tauI] # Scale the time scales to minutes
 
+def equation_metformin(x,t,p,metformin_in):
+    G,L,F,I,M = x
+    
+    vG0, vF0, vG, vL, vF = fluxes_metformin(x,p)
+    
+
+    dGdt = vG0- vG
+    dLdt = 2*vG - vL
+    dFdt = vF0 - vF * 3/16 
+    
+    # Dynamics of insulin
+    Imax = p[parameter_names.index('Imax')]
+    dI = p[parameter_names.index('deltaI')]
+    dIdt = insulin(G,Imax,dI) - I
+ 
+    dMdt = metformin_in - M
+
+    return [dGdt/tauG, dLdt/tauL, dFdt/tauF, dIdt/tauI, dMdt/tauM] # Scale the time scales to minutes
+
 
 def steady_state(p, t_max=500, concentration_noise=0.1):
     x0 = reference_state(concentration_noise)
@@ -161,15 +182,22 @@ def steady_state(p, t_max=500, concentration_noise=0.1):
     return result
 
 
-def response(p, t_max=500, n_data=1000, concentration_noise=0.1 , x0=None, clamped=False):
+def response(p, t_max=500, n_data=1000, concentration_noise=0.1 , x0=None, type=None, metformin_in=0):
 
     if x0 is None:
         x0 = reference_state(concentration_noise)
+        # Not nice but works
+        if type == 'metformin':
+            x0 = np.concatenate([x0, [0.0]])
+
     t = np.linspace(0,t_max,n_data)
-    if clamped:
+    if type == 'clamped':
         result = odeint(equation_clamped,x0, t, args=(p,))
+    elif type == 'metformin':
+        result = odeint(equation_metformin,x0, t, args=(p,metformin_in))
     else:
         result = odeint(equation,x0, t, args=(p,))
+
     return t, result
     
 
@@ -238,3 +266,27 @@ def reference_parameters( concentration_noise = 0.1, flux_noise = 0.1, ki_noise 
     kF = vF/_vF
 
     return [kG, kL, kF, kR, vG0, vF0, vE, K_G_L, K_F0_L, K_F0_I, K_G_I, a, Imax, deltaI]
+
+
+
+def fluxes_metformin(x,p):
+    G,L,F,I,M = x
+
+    kG, kL, kF, kR, vG0, _vF0, vE, K_G_L, K_F0_L, K_F0_I, K_G_I, a, Imax, deltaI = p
+
+   # Glucose production in liver
+    vG0 = vG0
+
+    # Lipolysis in adipose tissue
+    vF0 = _vF0 * ( (1/(1+L/K_F0_L))*(1/(1+I/K_F0_I)) - kR * F)
+
+    # Glycolysis
+    vG = kG * G * (1/(1+L/K_G_L)) * ( 1 + a * I / (I + K_G_I))
+
+    # Lactate consumption
+    vL = vE * kL*L/(kL*L + kF*F) * 1 / (1 + M)
+
+    # NEFA consumption
+    vF = vE * kF*F/(kL*L + kF*F) * 1 / (1 + M)
+
+    return [vG0, vF0, vG, vL, vF]
